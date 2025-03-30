@@ -93,11 +93,25 @@ func (ga *GeminiAgent) StreamRunConversation(
 	genConfig := ga.createGenerateContentConfig()
 
 	// 工具配置
-	genConfig.ToolConfig = &genai.ToolConfig{
+	toolConfig := &genai.ToolConfig{
 		FunctionCallingConfig: &genai.FunctionCallingConfig{
 			Mode: genai.FunctionCallingConfigModeAuto,
 		},
 	}
+
+	//自定义函数调用配置
+	if ga.config.FunctionCallingConfig != nil {
+		//工具使用的模式
+		if ga.config.FunctionCallingConfig.Mode != "" {
+			toolConfig.FunctionCallingConfig.Mode = genai.FunctionCallingConfigMode(ga.config.FunctionCallingConfig.Mode)
+		}
+		//指定使用哪些工具
+		if len(ga.config.FunctionCallingConfig.AllowedFunctionNames) > 0 {
+			toolConfig.FunctionCallingConfig.AllowedFunctionNames = ga.config.FunctionCallingConfig.AllowedFunctionNames
+		}
+	}
+
+	genConfig.ToolConfig = toolConfig
 
 	if ga.config.MaxTokens > 0 {
 		maxTokens := int32(ga.config.MaxTokens)
@@ -350,7 +364,7 @@ func (ga *GeminiAgent) rebuildToolParams() {
 		// 添加工具参数
 		ga.toolParams = append(ga.toolParams, toolParam)
 
-		PrintJSON("toolParam", toolParam)
+		//PrintJSON("toolParam", toolParam)
 	}
 }
 

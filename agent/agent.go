@@ -39,6 +39,11 @@ type TokenUsage struct {
 	CacheTokens      int `json:"cache_tokens"`      // 缓存命中
 }
 
+type FunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
 // AgentConfig 通用agent配置
 type AgentConfig struct {
 	APIKey   string // API密钥
@@ -53,6 +58,8 @@ type AgentConfig struct {
 
 	// 安全控制
 	MaxLoops int // 最大对话循环次数，防止AI递归，默认为5
+	//函数调用模式
+	FunctionCallingConfig *FunctionCallingConfig
 }
 
 // agent接口

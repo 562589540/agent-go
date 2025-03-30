@@ -121,9 +121,22 @@ func (oa *OpenAIAgent) StreamRunConversation(
 			},
 		}
 
-		// 设置最大token
+		//自定义函数调用配置
+		if oa.config.FunctionCallingConfig != nil {
+			//工具使用的模式
+			if oa.config.FunctionCallingConfig.Mode != "" {
+				params.ToolChoice.OfAuto = param.NewOpt(oa.config.FunctionCallingConfig.Mode)
+			}
+			//指定使用哪些工具
+			if len(oa.config.FunctionCallingConfig.AllowedFunctionNames) > 0 {
+				//todo::
+				fmt.Println("openai 不支持指定多个工具")
+			}
+		}
+
+		// 设置最大回复token
 		if oa.config.MaxTokens > 0 {
-			params.MaxTokens = param.NewOpt(oa.config.MaxTokens)
+			params.MaxCompletionTokens = param.NewOpt(oa.config.MaxTokens)
 		}
 
 		//设置温度
@@ -254,12 +267,6 @@ func (oa *OpenAIAgent) StreamRunConversation(
 				// 将工具响应添加到对话
 				toolMsg := openai.ToolMessage(result, callID)
 				messages = append(messages, toolMsg)
-
-				// 触发流式回调（如果需要）
-				// if handler != nil {
-				// 	toolInfo := fmt.Sprintf("[工具结果: %s]", result)
-				// 	handler(toolInfo)
-				// }
 			}
 
 			// 如果有工具调用失败，可以选择是否继续对话
