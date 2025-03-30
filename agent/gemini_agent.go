@@ -89,11 +89,8 @@ func (ga *GeminiAgent) StreamRunConversation(
 		messages = append(messages, ga.convertMessage(msg))
 	}
 
-	// 创建模型参数
-	genConfig := ga.createGenerateContentConfig()
-
 	// 工具配置
-	toolConfig := &genai.ToolConfig{
+	toolConfig := genai.ToolConfig{
 		FunctionCallingConfig: &genai.FunctionCallingConfig{
 			Mode: genai.FunctionCallingConfigModeAuto,
 		},
@@ -111,37 +108,6 @@ func (ga *GeminiAgent) StreamRunConversation(
 		}
 	}
 
-	genConfig.ToolConfig = toolConfig
-
-	if ga.config.MaxTokens > 0 {
-		maxTokens := int32(ga.config.MaxTokens)
-		genConfig.MaxOutputTokens = &maxTokens
-	}
-
-	if ga.config.Temperature > 0 {
-		temp := float32(ga.config.Temperature)
-		genConfig.Temperature = &temp
-	}
-
-	if ga.config.TopP > 0 {
-		topP := float32(ga.config.TopP)
-		genConfig.TopP = &topP
-	}
-
-	// 如果有系统指令，添加到配置中
-	if systemMsg != "" {
-		genConfig.SystemInstruction = &genai.Content{
-			Parts: []*genai.Part{
-				genai.NewPartFromText(systemMsg),
-			},
-		}
-	}
-
-	if ga.config.Debug {
-		PrintJSON("genConfig", genConfig)
-		PrintJSON("messages", messages)
-	}
-
 	// 对话循环
 	for {
 		// 检查循环次数是否超过限制
@@ -156,6 +122,42 @@ func (ga *GeminiAgent) StreamRunConversation(
 				PrintJSON("messages", messages)
 			}
 		}
+
+		// 每次循环创建新的genConfig
+		genConfig := ga.createGenerateContentConfig()
+
+		// 配置工具设置
+		genConfig.ToolConfig = &toolConfig
+
+		if ga.config.MaxTokens > 0 {
+			maxTokens := int32(ga.config.MaxTokens)
+			genConfig.MaxOutputTokens = &maxTokens
+		}
+
+		if ga.config.Temperature > 0 {
+			temp := float32(ga.config.Temperature)
+			genConfig.Temperature = &temp
+		}
+
+		if ga.config.TopP > 0 {
+			topP := float32(ga.config.TopP)
+			genConfig.TopP = &topP
+		}
+
+		// 如果有系统指令，添加到配置中
+		if systemMsg != "" {
+			genConfig.SystemInstruction = &genai.Content{
+				Parts: []*genai.Part{
+					genai.NewPartFromText(systemMsg),
+				},
+			}
+		}
+
+		if ga.config.Debug {
+			PrintJSON("genConfig", genConfig)
+			PrintJSON("messages", messages)
+		}
+
 		// 获取流式迭代器
 		iter := ga.client.Models.GenerateContentStream(ctx, modelName, messages, genConfig)
 
@@ -164,6 +166,7 @@ func (ga *GeminiAgent) StreamRunConversation(
 		var partsList []*genai.Part
 		var currentResp *genai.GenerateContentResponse
 		var streamErr error
+		var textContent string // 用于累积文本内容
 
 		// 处理流式响应
 		iter(func(resp *genai.GenerateContentResponse, err error) bool {
@@ -182,7 +185,8 @@ func (ga *GeminiAgent) StreamRunConversation(
 				for _, part := range content.Parts {
 					// 检查是否是文本内容
 					if part.Text != "" {
-						partsList = append(partsList, genai.NewPartFromText(part.Text))
+						// 累积文本而不是添加新的部分
+						textContent += part.Text
 
 						// 调用回调函数处理流消息
 						if handler != nil {
@@ -206,6 +210,11 @@ func (ga *GeminiAgent) StreamRunConversation(
 		// 如果流处理中出现错误，返回错误
 		if streamErr != nil {
 			return tokenUsage, fmt.Errorf("流处理错误: %w", streamErr)
+		}
+
+		// 添加累积的文本内容（如果有）
+		if textContent != "" {
+			partsList = append([]*genai.Part{genai.NewPartFromText(textContent)}, partsList...)
 		}
 
 		// 获取完整的助手消息
