@@ -137,8 +137,10 @@ func (ga *GeminiAgent) StreamRunConversation(
 		}
 	}
 
-	// PrintJSON("genConfig", genConfig)
-	// PrintJSON("messages", messages)
+	if ga.config.Debug {
+		PrintJSON("genConfig", genConfig)
+		PrintJSON("messages", messages)
+	}
 
 	// 对话循环
 	for {
@@ -150,7 +152,9 @@ func (ga *GeminiAgent) StreamRunConversation(
 
 		ga.debugf("当前循环 %d", loopCount)
 		if loopCount > 1 {
-			PrintJSON("messages", messages)
+			if ga.config.Debug {
+				PrintJSON("messages", messages)
+			}
 		}
 		// 获取流式迭代器
 		iter := ga.client.Models.GenerateContentStream(ctx, modelName, messages, genConfig)
@@ -363,8 +367,6 @@ func (ga *GeminiAgent) rebuildToolParams() {
 
 		// 添加工具参数
 		ga.toolParams = append(ga.toolParams, toolParam)
-
-		//PrintJSON("toolParam", toolParam)
 	}
 }
 

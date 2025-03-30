@@ -97,6 +97,10 @@ func (oa *OpenAIAgent) StreamRunConversation(
 	// 对话循环计数器
 	loopCount := 0
 
+	if oa.config.Debug {
+		PrintJSON("oa.toolParams", oa.toolParams)
+	}
+
 	// 对话循环
 	for {
 		// 检查循环次数是否超过限制
@@ -106,6 +110,11 @@ func (oa *OpenAIAgent) StreamRunConversation(
 		}
 
 		oa.debugf("开始流式请求，模型=%s, 循环次数=%d/%d", modelName, loopCount, oa.config.MaxLoops)
+		if loopCount > 1 {
+			if oa.config.Debug {
+				PrintJSON("messages", messages)
+			}
+		}
 
 		// 创建请求参数
 		params := openai.ChatCompletionNewParams{
