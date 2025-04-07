@@ -378,7 +378,7 @@ func main() {
 
 		// 调用agent处理用户输入
 		fmt.Println("\nAI正在思考...")
-		usage, err := agentService.StreamRunConversation(
+		usage, _, err := agentService.StreamRunConversation(
 			context.Background(),
 			agent.Gemini,
 			"gemini-2.0-flash",

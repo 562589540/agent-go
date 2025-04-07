@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -62,6 +63,11 @@ func NewOpenAIAgent(config AgentConfig) (*OpenAIAgent, error) {
 		config.TopP = 1.0
 	}
 
+	// 设置默认频率限制值
+	if config.RateLimitDelay < 0 {
+		config.RateLimitDelay = 0
+	}
+
 	// 创建客户端
 	client := openai.NewClient(opts...)
 
@@ -79,13 +85,30 @@ func (oa *OpenAIAgent) StreamRunConversation(
 	modelName string,
 	history []ChatMessage,
 	handler StreamHandler,
-) (*TokenUsage, error) {
+) (*TokenUsage, []ChatMessage, error) {
+	// 打包工具参数
+	oa.rebuildToolParams()
+
 	// 初始化token统计
 	tokenUsage := &TokenUsage{}
 
+	// 初始化对话历史，只记录本次对话
+	var conversationHistory []ChatMessage
+
+	// 添加最后一条用户消息到对话历史（本次问题）
+	if len(history) > 0 {
+		lastMsg := history[len(history)-1]
+		if lastMsg.Role == "user" {
+			conversationHistory = append(conversationHistory, lastMsg)
+		}
+	}
+
 	// 如果没有提供模型名称，使用默认值
 	if modelName == "" {
-		modelName = "gpt-4o" // 默认模型
+		modelName = oa.config.ModelName
+		if modelName == "" {
+			modelName = "gpt-4o" // 默认模型
+		}
 	}
 
 	// 创建消息数组，首先提取系统消息
@@ -106,7 +129,18 @@ func (oa *OpenAIAgent) StreamRunConversation(
 		// 检查循环次数是否超过限制
 		loopCount++
 		if loopCount > oa.config.MaxLoops {
-			return tokenUsage, fmt.Errorf("对话循环次数超过最大限制(%d)，可能存在递归", oa.config.MaxLoops)
+			return tokenUsage, conversationHistory, fmt.Errorf("对话循环次数超过最大限制(%d)，可能存在递归", oa.config.MaxLoops)
+		}
+
+		// 频率限制：如果不是第一轮对话且启用了频率限制，则添加延迟
+		if loopCount > 1 && oa.config.EnableRateLimit && oa.config.RateLimitDelay > 0 {
+			oa.debugf("频率限制：等待 %d 毫秒后继续", oa.config.RateLimitDelay)
+			select {
+			case <-ctx.Done():
+				return tokenUsage, conversationHistory, ctx.Err()
+			case <-time.After(time.Duration(oa.config.RateLimitDelay) * time.Millisecond):
+				// 等待指定时间后继续
+			}
 		}
 
 		oa.debugf("开始流式请求，模型=%s, 循环次数=%d/%d", modelName, loopCount, oa.config.MaxLoops)
@@ -128,6 +162,13 @@ func (oa *OpenAIAgent) StreamRunConversation(
 			StreamOptions: openai.ChatCompletionStreamOptionsParam{
 				IncludeUsage: param.NewOpt(true),
 			},
+		}
+
+		//必须先调用工具
+		if loopCount == 1 && oa.config.OnecFunctionCallingConfigModeAny {
+			params.ToolChoice.OfAuto = param.NewOpt("any")
+		} else {
+			params.ToolChoice.OfAuto = param.NewOpt("auto")
 		}
 
 		//自定义函数调用配置
@@ -200,12 +241,12 @@ func (oa *OpenAIAgent) StreamRunConversation(
 
 		// 检查流是否发生错误
 		if err := stream.Err(); err != nil {
-			return tokenUsage, fmt.Errorf("流处理错误: %v", err)
+			return tokenUsage, conversationHistory, fmt.Errorf("流处理错误: %v", err)
 		}
 
 		// 流结束后，获取完整响应
 		if len(acc.Choices) == 0 {
-			return tokenUsage, fmt.Errorf("没有收到回复")
+			return tokenUsage, conversationHistory, fmt.Errorf("没有收到回复")
 		}
 
 		// 更新Token使用情况
@@ -220,20 +261,34 @@ func (oa *OpenAIAgent) StreamRunConversation(
 				tokenUsage.TotalTokens, tokenUsage.PromptTokens, tokenUsage.CompletionTokens)
 		}
 
-		toolCalls := acc.Choices[0].Message.ToolCalls
+		// 获取完整的助手消息
+		assistantMessage := acc.Choices[0].Message
+		oa.debugf("收到助手消息，内容: %s", assistantMessage.Content)
 
-		// 工具调用逻辑
+		// 将助手消息添加到对话中（OpenAI格式）
+		assistantParam := assistantMessage.ToParam()
+		messages = append(messages, assistantParam)
+
+		// 创建通用格式的助手消息
+		assistantChatMsg := ChatMessage{
+			Role:    "assistant",
+			Content: assistantMessage.Content,
+		}
+
+		// 处理工具调用
+		toolCalls := assistantMessage.ToolCalls
 		if toolCallReceived && len(toolCalls) > 0 {
-			// 获取完整的助手消息
-			assistantMessage := acc.Choices[0].Message
-			oa.debugf("收到助手消息，包含 %d 个工具调用", len(assistantMessage.ToolCalls))
+			oa.debugf("收到助手消息，包含 %d 个工具调用", len(toolCalls))
 
-			// 将助手消息添加到对话中
-			assistantParam := assistantMessage.ToParam()
-			messages = append(messages, assistantParam)
+			// 添加工具调用到通用消息格式
+			assistantChatMsg.ToolCalls = oa.convertOpenAIToolCallsToToolCalls(toolCalls)
+
+			// 添加助手消息到对话历史
+			conversationHistory = append(conversationHistory, assistantChatMsg)
 
 			// 处理所有工具调用
 			allToolsHandled := true
+
 			for i, toolCall := range assistantMessage.ToolCalls {
 				oa.debugf("工具调用 #%d:", i+1)
 				oa.debugf("  ID: %s", toolCall.ID)
@@ -273,10 +328,25 @@ func (oa *OpenAIAgent) StreamRunConversation(
 
 				oa.debugf("工具执行结果: %s", result)
 
-				// 将工具响应添加到对话
+				// 将工具响应添加到OpenAI对话
 				toolMsg := openai.ToolMessage(result, callID)
 				messages = append(messages, toolMsg)
+
+				// 创建工具响应消息
+				toolResponseMsg := ChatMessage{
+					Role: "tool", // 使用tool角色而不是user
+				}
+				// 将工具响应添加到通用消息格式
+				functionResponse := FunctionResponse{
+					ID:     callID,
+					Name:   toolCall.Function.Name,
+					Result: map[string]any{"output": result},
+				}
+				toolResponseMsg.FunctionResponses = append(toolResponseMsg.FunctionResponses, functionResponse)
+				conversationHistory = append(conversationHistory, toolResponseMsg)
 			}
+
+			// 添加工具响应消息到对话历史
 
 			// 如果有工具调用失败，可以选择是否继续对话
 			if !allToolsHandled {
@@ -286,9 +356,12 @@ func (oa *OpenAIAgent) StreamRunConversation(
 			// 继续对话
 			continue
 		} else {
-			// 没有工具调用，返回响应内容
+			// 没有工具调用，添加普通助手消息到对话历史
+			conversationHistory = append(conversationHistory, assistantChatMsg)
+
+			// 返回响应内容
 			oa.debugf("对话结束，返回Token统计: %+v", tokenUsage)
-			return tokenUsage, nil
+			return tokenUsage, conversationHistory, nil
 		}
 	}
 }
@@ -309,8 +382,6 @@ func (oa *OpenAIAgent) RegisterTool(function FunctionDefinitionParam, handler To
 		Handler:  handler,
 	}
 
-	// 更新工具参数
-	oa.rebuildToolParams()
 	return nil
 }
 
@@ -354,10 +425,65 @@ func (oa *OpenAIAgent) convertMessage(msg ChatMessage) openai.ChatCompletionMess
 	switch msg.Role {
 	case "system":
 		return openai.SystemMessage(msg.Content)
+
 	case "user":
+		// 用户消息
 		return openai.UserMessage(msg.Content)
+
 	case "assistant":
+		// 如果有工具调用，处理工具调用（这里实际上我们在流程中已经处理好了，这里主要是转换历史消息）
+		if len(msg.ToolCalls) > 0 {
+			// 正确处理带工具调用的助手消息
+			var assistant openai.ChatCompletionAssistantMessageParam
+			assistant.Content.OfString = param.NewOpt(msg.Content)
+
+			// 转换所有工具调用
+			assistant.ToolCalls = make([]openai.ChatCompletionMessageToolCallParam, len(msg.ToolCalls))
+			for i, toolCall := range msg.ToolCalls {
+				assistant.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
+					ID:   toolCall.ID,
+					Type: "function",
+					Function: openai.ChatCompletionMessageToolCallFunctionParam{
+						Name: toolCall.Name,
+						Arguments: func() string {
+							// 将参数转回JSON字符串
+							argsBytes, err := json.Marshal(toolCall.Args)
+							if err != nil {
+								oa.debugf("转换工具调用参数错误: %v", err)
+								return "{}"
+							}
+							return string(argsBytes)
+						}(),
+					},
+				}
+			}
+
+			return openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant}
+		}
+
+		// 普通助手消息
 		return openai.AssistantMessage(msg.Content)
+
+	case "tool":
+		// 工具响应消息
+		if len(msg.FunctionResponses) > 0 {
+			// 只处理第一个函数响应，因为OpenAI的ToolMessage只支持一个工具调用ID和内容
+			funcResp := msg.FunctionResponses[0]
+
+			var content string
+			if output, ok := funcResp.Result["output"]; ok {
+				content = fmt.Sprintf("%v", output)
+			} else {
+				outputJSON, _ := json.Marshal(funcResp.Result)
+				content = string(outputJSON)
+			}
+
+			return openai.ToolMessage(content, funcResp.ID)
+		}
+
+		// 没有函数响应的工具消息，这种情况不太常见
+		return openai.ToolMessage(msg.Content, "")
+
 	default:
 		// 默认作为用户消息处理
 		return openai.UserMessage(msg.Content)
@@ -369,4 +495,30 @@ func (oa *OpenAIAgent) debugf(format string, args ...interface{}) {
 	if oa.config.Debug {
 		fmt.Printf("【OpenAI】"+format+"\n", args...)
 	}
+}
+
+// 从OpenAI响应转换到通用格式的函数
+func (oa *OpenAIAgent) convertOpenAIToolCallsToToolCalls(toolCalls []openai.ChatCompletionMessageToolCall) []FunctionCall {
+	functionCalls := make([]FunctionCall, 0, len(toolCalls))
+
+	// 添加工具调用到通用消息格式
+	for _, toolCall := range toolCalls {
+		// 解析参数
+		var args map[string]interface{}
+		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
+			oa.debugf("参数解析错误: %v", err)
+			continue
+		}
+
+		// 将OpenAI的工具调用转换为通用格式
+		functionCall := FunctionCall{
+			ID:   toolCall.ID,
+			Name: toolCall.Function.Name,
+			Args: args,
+		}
+
+		functionCalls = append(functionCalls, functionCall)
+	}
+
+	return functionCalls
 }

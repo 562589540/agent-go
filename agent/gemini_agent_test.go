@@ -87,7 +87,7 @@ func TestGeminiAgent(t *testing.T) {
 	}
 
 	// 运行对话
-	tokenUsage, err := agent.StreamRunConversation(ctx, "gemini-1.5-pro-latest", messages, streamHandler)
+	tokenUsage, _, err := agent.StreamRunConversation(ctx, "gemini-1.5-pro-latest", messages, streamHandler)
 	if err != nil {
 		t.Fatalf("执行对话失败: %v", err)
 	}
@@ -102,6 +102,91 @@ func TestGeminiAgent(t *testing.T) {
 	if tokenUsage.TotalTokens == 0 {
 		t.Error("没有记录Token使用情况")
 	}
+}
+
+// 测试GeminiAgent使用谷歌搜索功能
+func TestGeminiAgentWithGoogleSearch(t *testing.T) {
+	// 获取API密钥，如果没有设置跳过测试
+	apiKey := "AIzaSyBlqIMp0iRkU66zyk-tozMAxmnD1GWT7uY"
+	proxyURL := "http://127.0.0.1:7890"
+
+	// 配置代理
+	config := AgentConfig{
+		APIKey:      apiKey,
+		ProxyURL:    proxyURL,
+		Debug:       true,
+		MaxLoops:    5, // 增加循环次数，因为搜索可能需要多次交互
+		MaxTokens:   2000,
+		Temperature: 0.7,
+		TopP:        0.9,
+	}
+
+	// 创建代理
+	agent, err := NewGeminiAgent(config)
+	if err != nil {
+		t.Fatalf("创建GeminiAgent失败: %v", err)
+	}
+
+	// 注册谷歌搜索工具
+	googleSearchDef, googleSearchHandler := GoogleSearchTool()
+	err = agent.RegisterTool(googleSearchDef, googleSearchHandler)
+	if err != nil {
+		t.Fatalf("注册谷歌搜索工具失败: %v", err)
+	}
+
+	// 创建测试对话 - 要求模型使用搜索
+	ctx := context.Background()
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: "你是一个有用的AI助手，可以回答问题并使用工具。当需要查询最新信息时，请使用google_search工具。",
+		},
+		{
+			Role:    "user",
+			Content: "请告诉我2024年中国GDP增长预期是多少？使用谷歌搜索获取最新数据。",
+		},
+	}
+
+	// 收集流式消息
+	var outputMessages []string
+
+	// 创建流式回调
+	streamHandler := func(text string) {
+		outputMessages = append(outputMessages, text)
+		// 在测试中也打印消息
+		t.Logf("接收到消息: %s", text)
+	}
+
+	// 设置谷歌搜索使用的函数调用配置
+	// 将模式设置为AUTO，让模型自行决定何时调用工具
+	agent.config.FunctionCallingConfig = &FunctionCallingConfig{
+		Mode: "AUTO",
+	}
+
+	// 运行对话
+	t.Log("开始执行带有谷歌搜索的对话...")
+	tokenUsage, _, err := agent.StreamRunConversation(ctx, "gemini-2.0-flash", messages, streamHandler)
+	if err != nil {
+		t.Fatalf("执行对话失败: %v", err)
+	}
+
+	// 验证是否有输出
+	if len(outputMessages) == 0 {
+		t.Error("没有收到任何输出消息")
+	}
+
+	// 验证token使用情况
+	t.Logf("Token使用情况: %+v", tokenUsage)
+	if tokenUsage.TotalTokens == 0 {
+		t.Error("没有记录Token使用情况")
+	}
+
+	// 输出完整回复
+	fullResponse := ""
+	for _, msg := range outputMessages {
+		fullResponse += msg
+	}
+	t.Logf("完整回复: %s", fullResponse)
 }
 
 // 测试设置调试模式

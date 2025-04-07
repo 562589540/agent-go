@@ -75,16 +75,31 @@ func (ga *GeminiAgent) StreamRunConversation(
 	modelName string,
 	history []ChatMessage,
 	handler StreamHandler,
-) (*TokenUsage, error) {
+) (*TokenUsage, []ChatMessage, error) {
+
+	if modelName == "" {
+		modelName = ga.config.ModelName
+		if modelName == "" {
+			modelName = "gemini-2.0-flash"
+		}
+	}
+
+	// 打包工具参数
+	ga.rebuildToolParams()
+
 	// 对话循环计数器
 	loopCount := 0
 	// 初始化token统计
 	tokenUsage := &TokenUsage{}
 
+	// 初始化对话历史，只记录本次对话
+	var conversationHistory []ChatMessage
+
 	var messages []*genai.Content
 	// 提取系统消息
 	systemMsg, otherMsgs := ga.extractSystemMessage(history)
 
+	//提取历史记录
 	for _, msg := range otherMsgs {
 		messages = append(messages, ga.convertMessage(msg))
 	}
@@ -96,15 +111,11 @@ func (ga *GeminiAgent) StreamRunConversation(
 		},
 	}
 
-	//自定义函数调用配置
-	if ga.config.FunctionCallingConfig != nil {
-		//工具使用的模式
-		if ga.config.FunctionCallingConfig.Mode != "" {
-			toolConfig.FunctionCallingConfig.Mode = genai.FunctionCallingConfigMode(ga.config.FunctionCallingConfig.Mode)
-		}
-		//指定使用哪些工具
-		if len(ga.config.FunctionCallingConfig.AllowedFunctionNames) > 0 {
-			toolConfig.FunctionCallingConfig.AllowedFunctionNames = ga.config.FunctionCallingConfig.AllowedFunctionNames
+	// 添加最后一条用户消息到对话历史（本次问题）
+	if len(history) > 0 {
+		lastMsg := history[len(history)-1]
+		if lastMsg.Role == "user" {
+			conversationHistory = append(conversationHistory, lastMsg)
 		}
 	}
 
@@ -113,7 +124,7 @@ func (ga *GeminiAgent) StreamRunConversation(
 		// 检查循环次数是否超过限制
 		loopCount++
 		if loopCount > ga.config.MaxLoops {
-			return tokenUsage, fmt.Errorf("对话循环次数超过最大限制(%d)，可能存在递归", ga.config.MaxLoops)
+			return tokenUsage, conversationHistory, fmt.Errorf("对话循环次数超过最大限制(%d)，可能存在递归", ga.config.MaxLoops)
 		}
 
 		ga.debugf("当前循环 %d", loopCount)
@@ -123,26 +134,31 @@ func (ga *GeminiAgent) StreamRunConversation(
 			}
 		}
 
+		//为了避免gemini爱不调用函数
+		if loopCount == 1 && ga.config.OnecFunctionCallingConfigModeAny {
+			//第一次强制执行查询
+			toolConfig.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAny
+		} else {
+			toolConfig.FunctionCallingConfig.Mode = genai.FunctionCallingConfigModeAuto
+		}
+
+		//自定义函数调用配置
+		if ga.config.FunctionCallingConfig != nil {
+			//工具使用的模式
+			if ga.config.FunctionCallingConfig.Mode != "" {
+				toolConfig.FunctionCallingConfig.Mode = genai.FunctionCallingConfigMode(ga.config.FunctionCallingConfig.Mode)
+			}
+			//指定使用哪些工具
+			if len(ga.config.FunctionCallingConfig.AllowedFunctionNames) > 0 {
+				toolConfig.FunctionCallingConfig.AllowedFunctionNames = ga.config.FunctionCallingConfig.AllowedFunctionNames
+			}
+		}
+
 		// 每次循环创建新的genConfig
 		genConfig := ga.createGenerateContentConfig()
 
 		// 配置工具设置
 		genConfig.ToolConfig = &toolConfig
-
-		if ga.config.MaxTokens > 0 {
-			maxTokens := int32(ga.config.MaxTokens)
-			genConfig.MaxOutputTokens = &maxTokens
-		}
-
-		if ga.config.Temperature > 0 {
-			temp := float32(ga.config.Temperature)
-			genConfig.Temperature = &temp
-		}
-
-		if ga.config.TopP > 0 {
-			topP := float32(ga.config.TopP)
-			genConfig.TopP = &topP
-		}
 
 		// 如果有系统指令，添加到配置中
 		if systemMsg != "" {
@@ -153,9 +169,8 @@ func (ga *GeminiAgent) StreamRunConversation(
 			}
 		}
 
-		if ga.config.Debug {
-			PrintJSON("genConfig", genConfig)
-			PrintJSON("messages", messages)
+		if loopCount == 1 && ga.config.Debug {
+			PrintJSON("gemini genConfig", genConfig)
 		}
 
 		// 获取流式迭代器
@@ -179,10 +194,13 @@ func (ga *GeminiAgent) StreamRunConversation(
 			// 保存最新的响应，用于获取token使用信息
 			currentResp = resp
 
+			//IncludeThoughts 开启思考
+			//Thought 思考
+
 			// 处理响应内容
 			if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
 				content := resp.Candidates[0].Content
-				for _, part := range content.Parts {
+				for i, part := range content.Parts {
 					// 检查是否是文本内容
 					if part.Text != "" {
 						// 累积文本而不是添加新的部分
@@ -197,6 +215,11 @@ func (ga *GeminiAgent) StreamRunConversation(
 					// 检测是否有函数调用
 					if part.FunctionCall != nil {
 						hasToolCalls = true
+						//自己维护callID
+						if part.FunctionCall.ID == "" {
+							part.FunctionCall.ID = fmt.Sprintf("auto_id_%d", i+1)
+							ga.debugf("工具调用ID为空，自动生成ID: %s", part.FunctionCall.ID)
+						}
 						functionCalls = append(functionCalls, part.FunctionCall)
 						callPart := &genai.Part{FunctionCall: part.FunctionCall}
 						partsList = append(partsList, callPart)
@@ -209,7 +232,7 @@ func (ga *GeminiAgent) StreamRunConversation(
 
 		// 如果流处理中出现错误，返回错误
 		if streamErr != nil {
-			return tokenUsage, fmt.Errorf("流处理错误: %w", streamErr)
+			return tokenUsage, conversationHistory, fmt.Errorf("流处理错误: %w", streamErr)
 		}
 
 		// 添加累积的文本内容（如果有）
@@ -219,12 +242,27 @@ func (ga *GeminiAgent) StreamRunConversation(
 
 		// 获取完整的助手消息
 		assistantMsg := &genai.Content{
-			Parts: partsList,
 			Role:  "model",
+			Parts: partsList,
 		}
 
 		// 添加到消息历史
 		messages = append(messages, assistantMsg)
+
+		// 创建通用的ChatMessage格式的助手消息
+		assistantChatMsg := ChatMessage{
+			Role:    "assistant",
+			Content: textContent,
+		}
+
+		// 处理工具调用，添加到通用格式中
+		if hasToolCalls && len(functionCalls) > 0 {
+			// 使用工具函数转换函数调用为工具调用
+			assistantChatMsg.ToolCalls = ga.convertGeminiFunctionCallsToToolCalls(functionCalls)
+		}
+
+		// 添加助手消息到对话历史
+		conversationHistory = append(conversationHistory, assistantChatMsg)
 
 		// 更新token统计（如果有）
 		if currentResp != nil && currentResp.UsageMetadata != nil {
@@ -253,6 +291,11 @@ func (ga *GeminiAgent) StreamRunConversation(
 			userResponse := &genai.Content{
 				Role:  "user",
 				Parts: []*genai.Part{},
+			}
+
+			// 创建通用格式的工具响应消息
+			toolResponseMsg := ChatMessage{
+				Role: "tool", // 使用tool角色而不是user
 			}
 
 			// 处理所有工具调用
@@ -296,10 +339,28 @@ func (ga *GeminiAgent) StreamRunConversation(
 					// 添加函数响应到用户消息
 					responseMap = map[string]any{"output": result}
 				}
-				// 添加函数响应到用户消息
-				userResponse.Parts = append(userResponse.Parts,
-					genai.NewPartFromFunctionResponse(toolName, responseMap))
+
+				// 添加函数响应到Gemini消息
+				funcPart := genai.NewPartFromFunctionResponse(toolName, responseMap)
+				//自己维护callID
+				if funcPart.FunctionResponse != nil {
+					funcPart.FunctionResponse.ID = functionCall.ID
+				} else {
+					ga.debugf("警告: funcPart.FunctionResponse为空，无法设置ID")
+				}
+				userResponse.Parts = append(userResponse.Parts, funcPart)
+
+				// 创建通用格式的函数响应消息
+				funcResp := FunctionResponse{
+					ID:     functionCall.ID,
+					Name:   toolName,
+					Result: responseMap,
+				}
+				toolResponseMsg.FunctionResponses = append(toolResponseMsg.FunctionResponses, funcResp)
 			}
+
+			// 添加工具响应到对话历史
+			conversationHistory = append(conversationHistory, toolResponseMsg)
 
 			// 添加用户响应到消息列表
 			messages = append(messages, userResponse)
@@ -308,9 +369,9 @@ func (ga *GeminiAgent) StreamRunConversation(
 			continue
 		} else {
 			fmt.Println()
-			// 没有工具调用，结束对话并返回token统计
+			// 没有工具调用，结束对话并返回token统计和对话历史
 			ga.debugf("对话结束，返回Token统计: %+v", tokenUsage)
-			return tokenUsage, nil
+			return tokenUsage, conversationHistory, nil
 		}
 	}
 }
@@ -330,9 +391,6 @@ func (ga *GeminiAgent) RegisterTool(function FunctionDefinitionParam, handler To
 		Function: function,
 		Handler:  handler,
 	}
-
-	// 更新工具参数
-	ga.rebuildToolParams()
 	return nil
 }
 
@@ -424,19 +482,60 @@ func (ga *GeminiAgent) extractSystemMessage(messages []ChatMessage) (string, []C
 func (ga *GeminiAgent) convertMessage(msg ChatMessage) *genai.Content {
 	switch msg.Role {
 	case "assistant", "model":
-		return &genai.Content{
-			Parts: []*genai.Part{
-				genai.NewPartFromText(msg.Content),
-			},
-			Role: "model",
+		content := &genai.Content{
+			Role:  "model",
+			Parts: []*genai.Part{},
 		}
+
+		// 添加文本内容
+		if msg.Content != "" {
+			content.Parts = append(content.Parts, genai.NewPartFromText(msg.Content))
+		}
+
+		// 处理工具调用
+		for _, toolCall := range msg.ToolCalls {
+			functionCall := &genai.FunctionCall{
+				ID:   toolCall.ID,
+				Name: toolCall.Name,
+				Args: toolCall.Args,
+			}
+
+			// 添加到Parts
+			content.Parts = append(content.Parts, &genai.Part{
+				FunctionCall: functionCall,
+			})
+		}
+
+		return content
+
+	case "tool":
+		// 处理工具响应，在Gemini中作为用户消息处理
+		content := &genai.Content{
+			Role:  "user",
+			Parts: []*genai.Part{},
+		}
+
+		// 处理函数响应
+		for _, funcResp := range msg.FunctionResponses {
+			funcPart := genai.NewPartFromFunctionResponse(funcResp.Name, funcResp.Result)
+			//自己维护callID
+			if funcPart.FunctionResponse != nil {
+				funcPart.FunctionResponse.ID = funcResp.ID
+			} else {
+				ga.debugf("警告: funcPart.FunctionResponse为空，无法设置ID")
+			}
+			content.Parts = append(content.Parts, funcPart)
+		}
+
+		return content
+
 	default: // "user" 或其他
-		return &genai.Content{
-			Parts: []*genai.Part{
-				genai.NewPartFromText(msg.Content),
-			},
-			Role: "user",
+		content := &genai.Content{
+			Role:  "user",
+			Parts: []*genai.Part{},
 		}
+		content.Parts = append(content.Parts, genai.NewPartFromText(msg.Content))
+		return content
 	}
 }
 
@@ -450,4 +549,21 @@ func (ga *GeminiAgent) debugf(format string, args ...interface{}) {
 	if ga.config.Debug {
 		fmt.Printf("【DEBUG】"+format+"\n", args...)
 	}
+}
+
+// 从Gemini响应转换到通用格式的函数
+func (ga *GeminiAgent) convertGeminiFunctionCallsToToolCalls(functionCalls []*genai.FunctionCall) []FunctionCall {
+	toolCalls := make([]FunctionCall, 0, len(functionCalls))
+
+	for _, fc := range functionCalls {
+		// Gemini的函数调用转换为通用格式
+		toolCall := FunctionCall{
+			ID:   fc.ID,
+			Name: fc.Name,
+			Args: fc.Args,
+		}
+		toolCalls = append(toolCalls, toolCall)
+	}
+
+	return toolCalls
 }

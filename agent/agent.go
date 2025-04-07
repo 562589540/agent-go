@@ -6,10 +6,26 @@ import (
 	"sync"
 )
 
+// 通用函数调用
+type FunctionCall struct {
+	ID   string         `json:"id,omitempty"`   //函数调用ID
+	Args map[string]any `json:"args,omitempty"` //函数调用参数
+	Name string         `json:"name,omitempty"` //函数调用名称
+}
+
+// 方法响应
+type FunctionResponse struct {
+	ID     string         `json:"id,omitempty"`     //函数响应ID
+	Name   string         `json:"name,omitempty"`   //函数名称
+	Result map[string]any `json:"result,omitempty"` //函数响应
+}
+
 // 通用消息 不存储也不转换工具消息 只记录对话
 type ChatMessage struct {
-	Role    string `json:"role"`    //预设 标准open格式 其他库进行适配
-	Content string `json:"content"` //输出
+	Role              string             `json:"role"`                         //预设 标准open格式 其他库进行适配
+	Content           string             `json:"content"`                      //输出
+	ToolCalls         []FunctionCall     `json:"tool_calls,omitempty"`         //工具调用
+	FunctionResponses []FunctionResponse `json:"function_responses,omitempty"` //函数响应
 }
 
 // FunctionDefinitionParam 通用定义函数参数
@@ -51,6 +67,8 @@ type AgentConfig struct {
 	ProxyURL string // 代理URL
 	Debug    bool   // 调试模式
 
+	ModelName string
+
 	// 模型参数
 	MaxTokens   int64   // 最大生成令牌数
 	Temperature float64 // 温度参数，控制随机性，默认为0.7
@@ -60,6 +78,13 @@ type AgentConfig struct {
 	MaxLoops int // 最大对话循环次数，防止AI递归，默认为5
 	//函数调用模式
 	FunctionCallingConfig *FunctionCallingConfig
+
+	//第一次必须使用函数
+	OnecFunctionCallingConfigModeAny bool
+
+	// 频率限制配置
+	EnableRateLimit bool  // 是否启用频率限制
+	RateLimitDelay  int64 // 多轮对话间的延迟时间(毫秒)
 }
 
 // agent接口
@@ -69,7 +94,7 @@ type Agent interface {
 		modelName string, //模型名称
 		history []ChatMessage, //如果要保存系统指令和user提示词直接在history中添加
 		handler StreamHandler, //流式消息回调
-	) (*TokenUsage, error) //返回token使用统计
+	) (*TokenUsage, []ChatMessage, error) //返回token使用统计和对话历史
 	RegisterTool(function FunctionDefinitionParam, handler ToolFunction) error //注册工具
 	SetDebug(debug bool)                                                       //设置调试模式
 }
@@ -118,10 +143,10 @@ func (s *AgentService) StreamRunConversation(
 	modelName string, //模型名称
 	history []ChatMessage, //如果要保存系统指令和user提示词直接在history中添加
 	handler StreamHandler, //流式消息回调
-) (*TokenUsage, error) { //返回token使用统计
+) (*TokenUsage, []ChatMessage, error) { //返回token使用统计和对话历史
 	agent, err := s.GetAgent(agentName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return agent.StreamRunConversation(ctx, modelName, history, handler)
 }

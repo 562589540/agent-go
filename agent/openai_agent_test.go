@@ -8,17 +8,23 @@ import (
 // 测试OpenAIAgent基本功能
 func TestOpenAIAgent(t *testing.T) {
 	// 获取API密钥，如果没有设置跳过测试
-	apiKey := "sk-ofURrnxSMwFonqGpBd4aA1A1DaC64d97A3015c88E61d5411"
-	baseURL := "https://api.vveai.com/v1"
+	// apiKey := "sk-ofURrnxSMwFonqGpBd4aA1A1DaC64d97A3015c88E61d5411"
+	// baseURL := "https://api.vveai.com/v1"
 
 	// 初始化OpenAI客户端
 	// apiKey := "ak-dxv9jbsZfQmTGgkRWi1OQgnqRrLT4gHRdxBdKRpcRqh0eoe3"
 	// baseURL := "https://api.nextapi.fun/v1"
 
-	// 配置代理
+	// apiKey := "sk-BPC0fYOl5AsOpqlgfq0uFbeDREbqoB9diaKU3BFT8hZ007Wo"
+	// baseURL := "https://api.moonshot.cn/v1"
+	proxyURL := "http://127.0.0.1:7890"
+
+	apiKey := "sk-be39a30c3e4a4965bdc8e5d01e343974"
+	baseURL := "https://api.deepseek.com/v1"
 	config := AgentConfig{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
+		ProxyURL:    proxyURL,
 		Debug:       true,
 		MaxLoops:    3,
 		MaxTokens:   1000,
@@ -67,7 +73,7 @@ func TestOpenAIAgent(t *testing.T) {
 		},
 		{
 			Role:    "user",
-			Content: "现在几点了?",
+			Content: "现在几点了? 北京",
 		},
 	}
 
@@ -82,7 +88,7 @@ func TestOpenAIAgent(t *testing.T) {
 	}
 
 	// 运行对话
-	tokenUsage, err := agent.StreamRunConversation(ctx, "gpt-4o-mini-2024-07-18", messages, streamHandler)
+	tokenUsage, _, err := agent.StreamRunConversation(ctx, "deepseek-chat", messages, streamHandler)
 	if err != nil {
 		t.Fatalf("执行对话失败: %v", err)
 	}
