@@ -127,9 +127,15 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		t.Fatalf("创建GeminiAgent失败: %v", err)
 	}
 
-	// 注册谷歌搜索工具
-	googleSearchDef, googleSearchHandler := GoogleSearchTool()
-	err = agent.RegisterTool(googleSearchDef, googleSearchHandler)
+	// 创建配置
+	searchConfig := GoogleSearchConfig{
+		APIKey:         "AIzaSyByFckwiCTv6DvlL2cfvOmPwWXhGJmYNYI",
+		SearchEngineID: "c28d9acdf00c6418e",
+		ProxyURL:       "http://127.0.0.1:7890", // 可选
+	}
+
+	// 向Agent注册工具
+	err = RegisterGoogleSearchTool(agent, searchConfig)
 	if err != nil {
 		t.Fatalf("注册谷歌搜索工具失败: %v", err)
 	}
@@ -143,7 +149,7 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		},
 		{
 			Role:    "user",
-			Content: "请告诉我2024年中国GDP增长预期是多少？使用谷歌搜索获取最新数据。",
+			Content: "查看2025年最新抖音热梗，有什么热点可以蹭",
 		},
 	}
 
@@ -155,12 +161,6 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		outputMessages = append(outputMessages, text)
 		// 在测试中也打印消息
 		t.Logf("接收到消息: %s", text)
-	}
-
-	// 设置谷歌搜索使用的函数调用配置
-	// 将模式设置为AUTO，让模型自行决定何时调用工具
-	agent.config.FunctionCallingConfig = &FunctionCallingConfig{
-		Mode: "AUTO",
 	}
 
 	// 运行对话
