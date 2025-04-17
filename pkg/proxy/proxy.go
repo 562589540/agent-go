@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -157,36 +158,8 @@ func (p *ProxyServer) Stop() error {
 // handleRequest 处理所有代理请求
 func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	p.logger.Printf("收到请求: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
-
-	// --- 执行认证 ---
-	isConnect := r.Method == http.MethodConnect
-	ok, err := p.authenticator.Authenticate(r)
-	if err != nil {
-		// 认证过程中发生内部错误
-		p.logger.Printf("认证错误: %v", err)
-		http.Error(w, "认证服务内部错误", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		// 认证失败
-		if isConnect {
-			// 对于 CONNECT 请求，即使初始请求认证失败（通常因为 URL 中没有 auth_key），
-			// 我们也可能需要允许建立隧道，因为实际的认证可能发生在隧道内部的请求上。
-			// 或者应该使用 Proxy-Authorization 头。
-			p.logger.Printf("警告: CONNECT 请求 %s %s 认证失败或缺少凭证，但仍将尝试建立隧道。", r.Method, r.URL)
-			// 注意：这里选择继续处理 CONNECT，如果需要严格阻止未认证的 CONNECT，可以在此返回 407 Proxy Authentication Required
-			http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
-			return
-		} else {
-			// 对于非 CONNECT 请求，认证失败则直接拒绝
-			p.logger.Printf("拒绝未认证的请求: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-	// --- 认证结束 ---
-
-	if isConnect {
+	//不在这里认证
+	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 	} else {
 		p.handleHTTP(w, r)
@@ -424,7 +397,10 @@ func (p *ProxyServer) mitmProxyLoop(clientTlsConn net.Conn, serverTlsConn net.Co
 	reverseProxy := httputil.NewSingleHostReverseProxy(dummyTargetUrl)
 
 	// 自定义 transport，用于向现有的服务器 TLS 连接写入/读取数据
-	reverseProxy.Transport = &mitmTransport{Conn: serverTlsConn, Logger: p.logger}
+	reverseProxy.Transport = &mitmTransport{
+		Conn:   serverTlsConn,
+		Logger: p.logger,
+	}
 
 	// 自定义 Director 用于在发送请求前修改请求
 	originalDirector := reverseProxy.Director
@@ -433,23 +409,57 @@ func (p *ProxyServer) mitmProxyLoop(clientTlsConn net.Conn, serverTlsConn net.Co
 		originalDirector(req)
 		p.logger.Printf("MITM Director: 正在处理请求 %s", req.URL.String())
 
+		// 在替换 API Key 之前进行认证
+		isValid, err := p.authenticator.Authenticate(req)
+
+		authStatusCode := http.StatusOK // 默认成功
+		authMessage := ""
+
+		if err != nil {
+			p.logger.Printf("认证过程发生错误: %v", err)
+			var authErr *AuthServerError
+			if errors.As(err, &authErr) {
+				// 是主认证服务器返回的错误
+				authStatusCode = authErr.StatusCode
+				authMessage = authErr.Message
+			} else {
+				// 是其他内部错误
+				authStatusCode = http.StatusInternalServerError
+				authMessage = "代理认证内部错误: " + err.Error()
+			}
+			// 设置 Header 标记错误并携带信息
+			req.Header.Set(HeaderAuthResultCode, strconv.Itoa(authStatusCode))
+			req.Header.Set(HeaderAuthResultMessage, authMessage)
+			return // 认证出错，直接返回，不继续处理
+		}
+
+		if !isValid {
+			p.logger.Printf("认证失败 (密钥无效或缺失): %s %s", req.Method, req.URL)
+			authStatusCode = http.StatusUnauthorized
+			authMessage = "认证失败"
+			// 设置 Header 标记认证失败
+			req.Header.Set(HeaderAuthResultCode, strconv.Itoa(authStatusCode))
+			req.Header.Set(HeaderAuthResultMessage, authMessage)
+			return // 认证失败，直接返回，不继续处理
+		}
+
+		// 认证成功，继续执行
+		p.logger.Printf("MITM Director: 认证成功")
+
 		// --- 修改 API Key ---
 		originalAPIKey := req.Header.Get("x-goog-api-key")
 		nextKey := p.getNextAPIKey() // 获取下一个轮换密钥
 		if originalAPIKey != "" {
-			// 如果原始请求中包含 key，替换它
 			req.Header.Set("x-goog-api-key", nextKey)
 			p.logger.Printf("MITM Director: 已替换 API Key Header: %s -> %s", maskKey(originalAPIKey), maskKey(nextKey))
 		} else {
 			q := req.URL.Query()
 			urlKey := q.Get("key")
 			if urlKey != "" {
-				// 如果原始请求 URL 中包含 key，替换它
 				q.Set("key", nextKey)
 				req.URL.RawQuery = q.Encode()
 				p.logger.Printf("MITM Director: 已替换 URL API Key: %s -> %s", maskKey(urlKey), maskKey(nextKey))
 			} else {
-				// 如果原始请求中没有 key，添加一个 (这对于直接调用 API 但未设置 Key 的情况有用)
 				req.Header.Set("x-goog-api-key", nextKey)
 				p.logger.Printf("MITM Director: 添加了 API Key Header: %s", maskKey(nextKey))
 			}
@@ -458,9 +468,6 @@ func (p *ProxyServer) mitmProxyLoop(clientTlsConn net.Conn, serverTlsConn net.Co
 
 		req.Header.Del("Proxy-Connection")
 		req.Header.Del("Proxy-Authorization")
-		// ReverseProxy 会正确处理 Connection/Keep-Alive
-
-		// 确保 Host header 对目标是正确的
 		req.Host = targetHost
 		p.logger.Printf("MITM Director: 最终路径: %s, 主机: %s", req.URL.Path, req.Host)
 	}
@@ -539,10 +546,48 @@ type mitmTransport struct {
 }
 
 func (t *mitmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// 检查 Director 中设置的认证结果 Header
+	authCodeStr := req.Header.Get(HeaderAuthResultCode)
+	authMsg := req.Header.Get(HeaderAuthResultMessage)
+
+	if authCodeStr != "" {
+		// 认证在 Director 中已经失败或出错
+		// 移除标记头，避免发送给目标服务器
+		req.Header.Del(HeaderAuthResultCode)
+		req.Header.Del(HeaderAuthResultMessage)
+
+		statusCode, err := strconv.Atoi(authCodeStr)
+		if err != nil {
+			// 如果状态码解析失败，则默认为 500
+			t.Logger.Printf("mitmTransport: 无法解析认证结果状态码 '%s', 使用 500", authCodeStr)
+			statusCode = http.StatusInternalServerError
+		}
+		if authMsg == "" {
+			authMsg = http.StatusText(statusCode) // 如果消息为空，使用标准状态文本
+			if authMsg == "" {
+				authMsg = "认证时发生未知错误" // 最终回退
+			}
+		}
+
+		t.Logger.Printf("mitmTransport: 检测到认证结果: 状态码 %d, 消息: %s", statusCode, authMsg)
+		// 返回包含原始状态码和消息的响应
+		return &http.Response{
+			StatusCode: statusCode,
+			Status:     fmt.Sprintf("%d %s", statusCode, http.StatusText(statusCode)), // 例如 "404 Not Found"
+			Proto:      req.Proto,
+			ProtoMajor: req.ProtoMajor,
+			ProtoMinor: req.ProtoMinor,
+			Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}}, // 设置响应头
+			Body:       io.NopCloser(strings.NewReader(authMsg)),                           // 返回具体的错误信息
+			Request:    req,
+		}, nil // 返回响应，而不是错误，让 ReverseProxy 处理
+	}
+
+	// 认证已在 Director 处理且成功，这里正常继续
 	// 记录发送到实际服务器的请求
 	t.Logger.Printf("mitmTransport: 正在向目标发送请求: %s %s", req.Method, req.URL)
+
 	// === 启用请求 Dump ===
-	// 同时 Dump body
 	reqDump, errDump := httputil.DumpRequestOut(req, true)
 	if errDump != nil {
 		t.Logger.Printf("mitmTransport: Dump 输出请求错误: %v", errDump)
@@ -553,7 +598,6 @@ func (t *mitmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// 将请求写入现有的服务器连接
 	if err := req.Write(t.Conn); err != nil {
-		// 写入错误时尝试关闭连接？
 		t.Conn.Close()
 		return nil, fmt.Errorf("mitmTransport: 写入请求失败: %w", err)
 	}
@@ -562,7 +606,6 @@ func (t *mitmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// 从同一连接读取响应
 	resp, err := http.ReadResponse(bufio.NewReader(t.Conn), req)
 	if err != nil {
-		// 读取错误时尝试关闭连接？
 		t.Conn.Close()
 		return nil, fmt.Errorf("mitmTransport: 读取响应失败: %w", err)
 	}

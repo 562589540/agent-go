@@ -117,10 +117,10 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 	//apiKey := "xxxxx3xx3"
 	apiKey := proxy.GenerateTempToken("AC-0003-6GWS-WRIH-GEYE-L_XD-60")
 	// 尝试不同的代理格式
-	proxyURL := "http://127.0.0.1:8091?auth_key=" + apiKey // 重新添加认证参数
+	proxyURL := "http://127.0.0.1:8091" // 重新添加认证参数
 
 	// 输出实际代理URL
-	t.Logf("1使用代理URL: %s", proxyURL)
+	t.Logf("使用代理URL: %s", proxyURL)
 
 	// 配置代理
 	config := AgentConfig{
@@ -203,13 +203,13 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 
 // 测试直接使用 genai 客户端通过代理进行非流式调用 (使用 google.golang.org/genai 风格)
 func TestGenaiDirectNonStreaming(t *testing.T) {
-	apiKey := "xxxx3x11xx11"                                        // 使用你配置在 simple_proxy 中的 API Key
-	proxyURLStr := "http://127.0.0.1:8091?auth_key=your_secret_key" // 代理服务器地址
-	modelName := "gemini-1.5-flash-latest"                          // 或其他你可用的模型
+	apiKey := proxy.GenerateTempToken("AC-0003-6GWS-WRIH-GEYE-L_XD-60") // 使用你配置在 simple_proxy 中的 API Key
+	proxyURLStr := "http://127.0.0.1:8091"                              // 代理服务器地址
+	modelName := "gemini-1.5-flash"                                     // 或其他你可用的模型
 	prompt := "讲一个关于程序员的短笑话"
 
 	t.Logf("使用代理URL: %s", proxyURLStr)
-	t.Logf("使用模型1: %s", modelName)
+	t.Logf("使用模型1我2: %s", modelName)
 
 	// --- 配置 HTTP Client 使用代理 ---
 	proxyURL, err := url.Parse(proxyURLStr)
