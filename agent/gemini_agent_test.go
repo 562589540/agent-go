@@ -3,7 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
 	"testing"
+	"time"
+
+	"github.com/562589540/agent-go/pkg/proxy"
+	"google.golang.org/genai"
 )
 
 // 测试GeminiAgent基本功能
@@ -107,8 +114,13 @@ func TestGeminiAgent(t *testing.T) {
 // 测试GeminiAgent使用谷歌搜索功能
 func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 	// 获取API密钥，如果没有设置跳过测试
-	apiKey := "AIzaSyBlqIMp0iRkU66zyk-tozMAxmnD1GWT7uY"
-	proxyURL := "http://127.0.0.1:7890"
+	//apiKey := "xxxxx3xx3"
+	apiKey := proxy.GenerateTempToken("AC-0003-6GWS-WRIH-GEYE-L_XD-60")
+	// 尝试不同的代理格式
+	proxyURL := "http://127.0.0.1:8091?auth_key=" + apiKey // 重新添加认证参数
+
+	// 输出实际代理URL
+	t.Logf("1使用代理URL: %s", proxyURL)
 
 	// 配置代理
 	config := AgentConfig{
@@ -127,7 +139,7 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		t.Fatalf("创建GeminiAgent失败: %v", err)
 	}
 
-	// 创建配置
+	//创建配置
 	searchConfig := GoogleSearchConfig{
 		APIKey:         "AIzaSyByFckwiCTv6DvlL2cfvOmPwWXhGJmYNYI",
 		SearchEngineID: "c28d9acdf00c6418e",
@@ -187,6 +199,98 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		fullResponse += msg
 	}
 	t.Logf("完整回复: %s", fullResponse)
+}
+
+// 测试直接使用 genai 客户端通过代理进行非流式调用 (使用 google.golang.org/genai 风格)
+func TestGenaiDirectNonStreaming(t *testing.T) {
+	apiKey := "xxxx3x11xx11"                                        // 使用你配置在 simple_proxy 中的 API Key
+	proxyURLStr := "http://127.0.0.1:8091?auth_key=your_secret_key" // 代理服务器地址
+	modelName := "gemini-1.5-flash-latest"                          // 或其他你可用的模型
+	prompt := "讲一个关于程序员的短笑话"
+
+	t.Logf("使用代理URL: %s", proxyURLStr)
+	t.Logf("使用模型1: %s", modelName)
+
+	// --- 配置 HTTP Client 使用代理 ---
+	proxyURL, err := url.Parse(proxyURLStr)
+	if err != nil {
+		t.Fatalf("解析代理URL失败: %v", err)
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+		// 可选：添加TLS客户端配置以信任自定义CA（如果需要）
+		// TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 注意：仅用于测试！
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Minute,
+	}
+	// --- HTTP Client 配置结束 ---
+
+	ctx := context.Background()
+
+	// --- 创建 genai Client ---
+	// 创建Gemini客户端配置
+	clientConfig := &genai.ClientConfig{
+		APIKey:     apiKey,
+		HTTPClient: httpClient,
+	}
+
+	// 创建Gemini客户端
+	client, err := genai.NewClient(context.Background(), clientConfig)
+	if err != nil {
+		t.Fatalf("创建 genai 客户端失败: %v", err)
+	}
+	// defer client.Close() // 新版SDK似乎没有Close方法
+	// --- genai Client 创建结束 ---
+
+	// 获取模型实例并发送请求
+	model := client.Models
+
+	t.Log("发送非流式请求...")
+	// 修正：创建一个 *genai.Content 包含 genai.NewPartFromText，然后将其放入 []*genai.Content 切片
+	contents := []*genai.Content{
+		{
+			Parts: []*genai.Part{genai.NewPartFromText(prompt)},
+			Role:  "user", // 指定角色
+		},
+	}
+	resp, err := model.GenerateContent(ctx, modelName, contents, nil)
+
+	// --- 检查响应 ---
+	if err != nil {
+		t.Fatalf("GenerateContent 请求失败: %v", err)
+	}
+
+	if resp == nil || len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil || len(resp.Candidates[0].Content.Parts) == 0 {
+		t.Fatal("收到了空的响应或候选内容")
+	}
+
+	// 提取并打印文本响应
+	var responseText string
+	// 修正2：直接访问 part.Text 字段
+	part := resp.Candidates[0].Content.Parts[0]
+	if part.Text != "" {
+		responseText = part.Text
+	} else {
+		t.Logf("警告: 响应的第一个部分不是文本: %+v", part) // 添加日志以防万一
+	}
+
+	t.Logf("收到响应: %s", responseText)
+	if responseText == "" {
+		t.Error("收到的响应文本为空")
+	}
+	// --- 响应检查结束 ---
 }
 
 // 测试设置调试模式
