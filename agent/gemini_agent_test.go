@@ -115,7 +115,7 @@ func TestGeminiAgent(t *testing.T) {
 func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 	// 获取API密钥，如果没有设置跳过测试
 	//apiKey := "xxxxx3xx3"
-	apiKey := proxy.GenerateTempToken("AC-0003-PY-Y-MBWY-LE9P-E9NL-46")
+	apiKey := proxy.GenerateTempToken("AC-0003-CWWU-HWDW-4ZLD-D-HF-E7")
 	// 尝试不同的代理格式
 	proxyURL := "http://43.134.14.16:8091" // 重新添加认证参数
 

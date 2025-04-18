@@ -19,17 +19,26 @@ const TokenExpiry = 60 // 1分钟有效期
 // 服务器密钥 - 固定写死，客户端和服务器端必须一致
 var serverSecretKey = []byte("d41d8cd98f00b204e9800998ecf8427e12345678")
 
+// 获取北京时间（UTC+8）用于密钥生成，确保客户端与服务端一致性
+func getBeijingTime(t time.Time) time.Time {
+	// 创建北京时区（UTC+8）
+	beijingLoc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	// 转换为北京时间
+	return t.In(beijingLoc)
+}
+
 // GenerateTempToken 根据原始auth_key生成临时token
 // 使用AES加密和当天日期作为动态因子
 func GenerateTempToken(authKey string) string {
-	// 当前时间戳
+	// 获取当前时间，用于计算过期时间（Unix时间戳是与时区无关的）
 	now := time.Now()
 	expiry := now.Add(TokenExpiry * time.Second)
 
-	// 使用当天日期作为动态因子生成密钥
+	// 使用当天日期作为动态因子生成密钥（使用北京时间）
 	dailyKey := generateDailyKey(now)
 
 	// 构造要加密的明文：原始authKey + 过期时间戳
+	// Unix时间戳与时区无关，确保客户端和服务端一致
 	plaintext := authKey + "|" + strconv.FormatInt(expiry.Unix(), 10)
 
 	// 使用AES-GCM加密
@@ -52,14 +61,18 @@ func DecodeToken(token string) (string, error) {
 		return "", errors.New("无效的token格式")
 	}
 
+	// 获取当前时间，用于验证过期时间
+	// Unix时间戳是与时区无关的
+	now := time.Now()
+
 	// 使用当天日期作为动态因子生成密钥
-	dailyKey := generateDailyKey(time.Now())
+	dailyKey := generateDailyKey(now)
 
 	// 解密数据
 	decrypted, err := decryptAES(encryptedData, dailyKey)
 	if err != nil {
 		// 如果当天密钥无法解密，尝试使用昨天的密钥（处理跨天边界问题）
-		yesterdayKey := generateDailyKey(time.Now().AddDate(0, 0, -1))
+		yesterdayKey := generateDailyKey(now.AddDate(0, 0, -1))
 		decrypted, err = decryptAES(encryptedData, yesterdayKey)
 		if err != nil {
 			return "", errors.New("token解密失败")
@@ -81,7 +94,8 @@ func DecodeToken(token string) (string, error) {
 	}
 
 	// 检查是否过期
-	if time.Now().Unix() > expiry {
+	// Unix时间戳与时区无关，确保客户端和服务端一致
+	if now.Unix() > expiry {
 		return "", errors.New("token已过期")
 	}
 
@@ -91,8 +105,10 @@ func DecodeToken(token string) (string, error) {
 // generateDailyKey 根据当天日期生成一个动态密钥
 // 使用服务器密钥和当前日期（年月日）生成
 func generateDailyKey(t time.Time) []byte {
+	// 转换为北京时间再格式化
+	beijingTime := getBeijingTime(t)
 	// 格式化当前日期为 YYYYMMDD
-	dateStr := t.Format("20060102")
+	dateStr := beijingTime.Format("20060102")
 
 	// 组合服务器密钥和日期
 	saltedKey := append(serverSecretKey, []byte(dateStr)...)

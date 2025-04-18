@@ -68,3 +68,5 @@ debug
 
 # 缓存
 .cache/ 
+
+.goproxy-ca/

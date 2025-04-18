@@ -106,11 +106,12 @@ func checkKeyInDatabase(key string) (bool, error) {
 	decodedKey, err := DecodeToken(key)
 	if err != nil {
 		// 解密失败，继续使用原始key
-		originalKey = key
-	} else {
-		// 解密成功，使用解密后的key
-		originalKey = decodedKey
+		fmt.Println("解密失败 DecodeToken", err)
+		return false, errors.New("通讯失败，请同步北京时间")
 	}
+
+	// 解密成功，使用解密后的key
+	originalKey = decodedKey
 
 	// 从环境变量获取主服务器认证 API 的 URL 和密钥
 	apiURL := os.Getenv("MAIN_SERVER_AUTH_API_URL")
