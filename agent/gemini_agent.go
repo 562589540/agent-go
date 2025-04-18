@@ -23,8 +23,9 @@ func NewGeminiAgent(config AgentConfig) (*GeminiAgent, error) {
 	// 创建HTTP客户端
 	httpClient := &http.Client{}
 
-	// 如果设置了代理
-	if config.ProxyURL != "" {
+	if config.Client != nil {
+		httpClient = config.Client
+	} else if config.ProxyURL != "" {
 		proxyURL, err := url.Parse(config.ProxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("解析代理URL错误: %v", err)

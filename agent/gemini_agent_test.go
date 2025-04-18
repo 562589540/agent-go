@@ -115,9 +115,14 @@ func TestGeminiAgent(t *testing.T) {
 func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 	// 获取API密钥，如果没有设置跳过测试
 	//apiKey := "xxxxx3xx3"
-	apiKey := proxy.GenerateTempToken("AC-0003-6GWS-WRIH-GEYE-L_XD-60")
+	apiKey := proxy.GenerateTempToken("AC-0003-PY-Y-MBWY-LE9P-E9NL-46")
 	// 尝试不同的代理格式
-	proxyURL := "http://127.0.0.1:8091" // 重新添加认证参数
+	proxyURL := "http://43.134.14.16:8091" // 重新添加认证参数
+
+	proxyClient, err := CreateProxiedHttpClientWithCustomCA(proxyURL)
+	if err != nil {
+		t.Fatalf("创建代理客户端失败: %v", err)
+	}
 
 	// 输出实际代理URL
 	t.Logf("使用代理URL: %s", proxyURL)
@@ -125,12 +130,12 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 	// 配置代理
 	config := AgentConfig{
 		APIKey:      apiKey,
-		ProxyURL:    proxyURL,
 		Debug:       true,
 		MaxLoops:    5, // 增加循环次数，因为搜索可能需要多次交互
 		MaxTokens:   2000,
 		Temperature: 0.7,
 		TopP:        0.9,
+		Client:      proxyClient,
 	}
 
 	// 创建代理
@@ -139,18 +144,18 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 		t.Fatalf("创建GeminiAgent失败: %v", err)
 	}
 
-	//创建配置
-	searchConfig := GoogleSearchConfig{
-		APIKey:         "AIzaSyByFckwiCTv6DvlL2cfvOmPwWXhGJmYNYI",
-		SearchEngineID: "c28d9acdf00c6418e",
-		ProxyURL:       "http://127.0.0.1:7890", // 可选
-	}
+	// //创建配置
+	// searchConfig := GoogleSearchConfig{
+	// 	APIKey:         "AIzaSyByFckwiCTv6DvlL2cfvOmPwWXhGJmYNYI",
+	// 	SearchEngineID: "c28d9acdf00c6418e",
+	// 	ProxyURL:       "http://127.0.0.1:7890", // 可选
+	// }
 
-	// 向Agent注册工具
-	err = RegisterGoogleSearchTool(agent, searchConfig)
-	if err != nil {
-		t.Fatalf("注册谷歌搜索工具失败: %v", err)
-	}
+	// // 向Agent注册工具
+	// err = RegisterGoogleSearchTool(agent, searchConfig)
+	// if err != nil {
+	// 	t.Fatalf("注册谷歌搜索工具失败: %v", err)
+	// }
 
 	// 创建测试对话 - 要求模型使用搜索
 	ctx := context.Background()
@@ -203,9 +208,9 @@ func TestGeminiAgentWithGoogleSearch(t *testing.T) {
 
 // 测试直接使用 genai 客户端通过代理进行非流式调用 (使用 google.golang.org/genai 风格)
 func TestGenaiDirectNonStreaming(t *testing.T) {
-	apiKey := proxy.GenerateTempToken("AC-0003-6GWS-WRIH-GEYE-L_XD-60") // 使用你配置在 simple_proxy 中的 API Key
-	proxyURLStr := "http://127.0.0.1:8091"                              // 代理服务器地址
-	modelName := "gemini-1.5-flash"                                     // 或其他你可用的模型
+	apiKey := "AIzaSyCPSvcZBvoevHaF980VG-t765TtEvUUvzI" // 使用你配置在 simple_proxy 中的 API Key
+	proxyURLStr := "http://127.0.0.1:7890"              // 代理服务器地址
+	modelName := "gemini-1.5-flash"                     // 或其他你可用的模型
 	prompt := "讲一个关于程序员的短笑话"
 
 	t.Logf("使用代理URL: %s", proxyURLStr)

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 )
 
@@ -85,6 +86,8 @@ type AgentConfig struct {
 	// 频率限制配置
 	EnableRateLimit bool  // 是否启用频率限制
 	RateLimitDelay  int64 // 多轮对话间的延迟时间(毫秒)
+
+	Client *http.Client
 }
 
 // agent接口
