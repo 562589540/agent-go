@@ -58,7 +58,7 @@ func CreateProxiedHttpClientWithCustomCA(proxyAddr string) (*http.Client, error)
 	if ok := rootCAs.AppendCertsFromPEM([]byte(caCertStr)); !ok {
 		return nil, fmt.Errorf("无法将代理 CA 证书添加到信任池")
 	}
-	fmt.Printf("【INFO】辅助函数: 已加载并信任代理 CA 证书\n")
+	//fmt.Printf("【INFO】辅助函数: 已加载并信任代理 CA 证书\n")
 
 	// 4. 创建包含自定义 CA 的 TLS 配置
 	tlsConfig := &tls.Config{
@@ -114,7 +114,7 @@ func CreateProxiedHttpClientWithCustomCA(proxyAddr string) (*http.Client, error)
 		Transport: transport,
 		Timeout:   2 * time.Minute, // 为整个请求设置超时
 	}
-	fmt.Printf("【INFO】辅助函数: HTTP 客户端已配置使用代理 %s 并信任 CA\n", proxyAddr)
+	//fmt.Printf("【INFO】辅助函数: HTTP 客户端已配置使用代理 %s 并信任 CA\n", proxyAddr)
 
 	return httpClient, nil
 }
