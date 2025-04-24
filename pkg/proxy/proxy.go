@@ -55,10 +55,13 @@ type ProxyServer struct {
 	// 用于 API 密钥轮换
 	keyIndex int
 	keyMutex sync.Mutex
+
+	// 防御系统
+	defense DefenseSystem
 }
 
 // NewProxy 创建一个新的 HTTP 代理服务器实例
-func NewProxy(listenAddr string, apiKeys []string, upstreamProxyURL string, authenticator Authenticator) (*ProxyServer, error) {
+func NewProxy(ctx context.Context, listenAddr string, apiKeys []string, upstreamProxyURL string, authenticator Authenticator) (*ProxyServer, error) {
 	logger := log.New(log.Writer(), "[Proxy] ", log.LstdFlags) // 使用 [Proxy] 作为日志前缀
 
 	// 检查 API 密钥池是否为空
@@ -106,6 +109,9 @@ func NewProxy(listenAddr string, apiKeys []string, upstreamProxyURL string, auth
 		Timeout:   2 * time.Minute,
 	}
 
+	// 创建防御系统
+	defense := NewDefenseSystem(ctx, logger)
+
 	return &ProxyServer{
 		listenAddr:       listenAddr,
 		apiKeys:          apiKeys,
@@ -114,6 +120,7 @@ func NewProxy(listenAddr string, apiKeys []string, upstreamProxyURL string, auth
 		httpClient:       httpClient,
 		authenticator:    authenticator,
 		keyIndex:         0,
+		defense:          defense,
 	}, nil
 }
 
@@ -135,6 +142,11 @@ func (p *ProxyServer) Start() error {
 		p.logger.Printf("使用上游代理: %s", p.upstreamProxyURL)
 	}
 
+	// 输出防御系统状态
+	if defenseSystem, ok := p.defense.(*DefaultDefenseSystem); ok {
+		defenseSystem.PrintStatus()
+	}
+
 	// 创建HTTP服务器
 	p.server = &http.Server{
 		Addr:         p.listenAddr,
@@ -149,6 +161,12 @@ func (p *ProxyServer) Start() error {
 // Stop 停止代理服务器
 func (p *ProxyServer) Stop() error {
 	p.logger.Println("停止代理服务器...")
+
+	// 关闭防御系统
+	if p.defense != nil {
+		p.defense.Shutdown()
+	}
+
 	if p.server != nil {
 		return p.server.Close()
 	}
@@ -157,13 +175,79 @@ func (p *ProxyServer) Stop() error {
 
 // handleRequest 处理所有代理请求
 func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
-	p.logger.Printf("收到请求: %s %s from %s", r.Method, r.URL, r.RemoteAddr)
+	// 获取客户端IP
+	clientIP := getClientIPFromRequest(r)
+
+	// 获取主机名
+	hostname := r.URL.Hostname()
+	if hostname == "" {
+		hostname = r.Host
+		if strings.Contains(hostname, ":") {
+			hostname, _, _ = net.SplitHostPort(hostname)
+		}
+	}
+
+	// 使用防御系统检查请求
+	if allowed, message := p.defense.CheckRequest(clientIP, hostname); !allowed {
+		http.Error(w, message, http.StatusForbidden)
+		return
+	}
+
+	// 全局拦截逻辑：只允许Google生成式语言API的请求通过
+	// 对于CONNECT请求，直接检查Host
+	if r.Method == http.MethodConnect {
+		host := r.Host
+		connectHostname, _, _ := net.SplitHostPort(host)
+		if connectHostname == "" {
+			connectHostname = host
+		}
+
+		if connectHostname != "generativelanguage.googleapis.com" {
+			// 静默拒绝其他所有CONNECT请求（不记录日志）
+			http.Error(w, "拒绝连接", http.StatusForbidden)
+			return
+		}
+	} else {
+		// 对于普通HTTP请求，检查URL的主机名
+		// 只允许对谷歌生成式语言API的请求
+		if hostname != "generativelanguage.googleapis.com" {
+			// 静默拒绝其他所有HTTP请求（不记录日志）
+			http.Error(w, "拒绝请求", http.StatusForbidden)
+			return
+		}
+	}
+
+	p.logger.Printf("收到请求: %s %s from %s", r.Method, r.URL, clientIP)
+
 	//不在这里认证
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 	} else {
 		p.handleHTTP(w, r)
 	}
+}
+
+// 从http.Request获取客户端IP
+func getClientIPFromRequest(r *http.Request) string {
+	// 尝试从各种可能的Header获取真实IP
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		// X-Forwarded-For可能包含多个IP，取第一个
+		ips := strings.Split(ip, ",")
+		if len(ips) > 0 && ips[0] != "" {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// 从RemoteAddr获取IP
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// 如果解析失败，直接返回原始地址
+		return r.RemoteAddr
+	}
+	return ip
 }
 
 // handleConnect 处理HTTPS隧道 (CONNECT请求)
@@ -177,6 +261,14 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	p.logger.Printf("处理CONNECT请求: %s (主机名: %s)", targetHost, hostname)
 	p.logger.Printf("请求头: %v", r.Header)
+
+	// 使用防御系统再次检查CONNECT请求主机名
+	// 这里使用getClientIPFromRequest获取IP，确保和handleRequest中的检查方式一致
+	clientIP := getClientIPFromRequest(r)
+	if allowed, message := p.defense.CheckRequest(clientIP, hostname); !allowed {
+		http.Error(w, message, http.StatusForbidden)
+		return
+	}
 
 	// === Google API 的 MITM (中间人攻击) 逻辑 ===
 	if hostname == "generativelanguage.googleapis.com" {
@@ -728,8 +820,8 @@ func maskKey(key string) string {
 }
 
 // StartProxy 是一个便捷函数，用于创建并启动代理服务器
-func StartProxy(addr string, apiKeys []string, upstreamProxyURL string, authenticator Authenticator) error {
-	proxy, err := NewProxy(addr, apiKeys, upstreamProxyURL, authenticator)
+func StartProxy(ctx context.Context, addr string, apiKeys []string, upstreamProxyURL string, authenticator Authenticator) error {
+	proxy, err := NewProxy(ctx, addr, apiKeys, upstreamProxyURL, authenticator)
 	if err != nil {
 		log.Fatalf("创建代理失败: %v", err)
 	}
@@ -916,4 +1008,9 @@ func signHost(host string) (*tls.Certificate, error) {
 	}
 
 	return cert, nil
+}
+
+// GetDefenseSystem 返回代理服务器的防御系统
+func (p *ProxyServer) GetDefenseSystem() DefenseSystem {
+	return p.defense
 }
