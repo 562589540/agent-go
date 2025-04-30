@@ -6,7 +6,7 @@ toolchain go1.23.3
 
 require (
 	github.com/openai/openai-go v0.1.0-beta.3
-	google.golang.org/genai v0.7.0
+	google.golang.org/genai v1.2.0
 )
 
 require (

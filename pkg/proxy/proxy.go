@@ -187,13 +187,7 @@ func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 使用防御系统检查请求
-	if allowed, message := p.defense.CheckRequest(clientIP, hostname); !allowed {
-		http.Error(w, message, http.StatusForbidden)
-		return
-	}
-
-	// 全局拦截逻辑：只允许Google生成式语言API的请求通过
+	// 最先进行拦截检查：只允许Google生成式语言API的请求通过
 	// 对于CONNECT请求，直接检查Host
 	if r.Method == http.MethodConnect {
 		host := r.Host
@@ -215,6 +209,12 @@ func (p *ProxyServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "拒绝请求", http.StatusForbidden)
 			return
 		}
+	}
+
+	// 使用防御系统检查请求
+	if allowed, message := p.defense.CheckRequest(clientIP, hostname); !allowed {
+		http.Error(w, message, http.StatusForbidden)
+		return
 	}
 
 	p.logger.Printf("收到请求: %s %s from %s", r.Method, r.URL, clientIP)

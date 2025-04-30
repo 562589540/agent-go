@@ -271,19 +271,13 @@ func (ga *GeminiAgent) StreamRunConversation(
 			tokenUsage.TotalTokens += int(currentResp.UsageMetadata.TotalTokenCount)
 
 			// 提示词token
-			if currentResp.UsageMetadata.PromptTokenCount != nil {
-				tokenUsage.PromptTokens += int(*currentResp.UsageMetadata.PromptTokenCount)
-			}
+			tokenUsage.PromptTokens += int(currentResp.UsageMetadata.PromptTokenCount)
 
 			// 完成/响应token
-			if currentResp.UsageMetadata.CandidatesTokenCount != nil {
-				tokenUsage.CompletionTokens += int(*currentResp.UsageMetadata.CandidatesTokenCount)
-			}
+			tokenUsage.CompletionTokens += int(currentResp.UsageMetadata.CandidatesTokenCount)
 
 			// 缓存token
-			if currentResp.UsageMetadata.CachedContentTokenCount != nil {
-				tokenUsage.CacheTokens += int(*currentResp.UsageMetadata.CachedContentTokenCount)
-			}
+			tokenUsage.CacheTokens += int(currentResp.UsageMetadata.CachedContentTokenCount)
 		}
 
 		// 如果有工具调用
@@ -445,7 +439,7 @@ func (ga *GeminiAgent) createGenerateContentConfig() *genai.GenerateContentConfi
 	// 设置生成参数
 	if ga.config.MaxTokens > 0 {
 		maxTokens := int32(ga.config.MaxTokens)
-		config.MaxOutputTokens = &maxTokens
+		config.MaxOutputTokens = maxTokens
 	}
 
 	if ga.config.Temperature > 0 {
